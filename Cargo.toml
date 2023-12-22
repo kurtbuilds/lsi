@@ -1,7 +1,8 @@
 [package]
-name = "fast_intered_string"
+name = "lsi"
 version = "0.1.0"
 edition = "2021"
+description = "A leaking string interner. In return for leaking, you get ludicrous speed."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -15,6 +16,13 @@ harness = false
 [dependencies]
 hashbrown = { version = "0.14.3", features = ["raw"] }
 ahash = "0.8.6"
+dashmap = { version = "5.5.3" , features = ["raw-api"]}
+ctor = "0.2.6"
 
 [dev-dependencies]
 criterion = "0.5.1"
+string-interner = "0.14.0"
+lasso = "0.7.2"
+ustr = "0.10.0"
+intaglio = "1.9.1"
+

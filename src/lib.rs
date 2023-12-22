@@ -1,29 +1,31 @@
 use std::alloc::{alloc, Layout, LayoutError};
-use std::hash::{BuildHasher, BuildHasherDefault};
-use hashbrown::{HashSet, hash_map::DefaultHashBuilder};
+use std::mem::MaybeUninit;
 use std::ptr::{addr_of, addr_of_mut, NonNull};
-use std::sync::RwLock;
+
+use dashmap::{DashMap, SharedValue};
 
 /// The primary type of this crate.
 /// Internally, it is a pointer to a leaked [`InternedData`] struct, which itself
 /// is a representation of a string.
 /// Because it is a pointer, it is `Copy`, and equality checking is a single instruction.
 #[derive(Copy, Clone, Debug)]
-pub struct FastStr(NonNull<*const u8>);
+pub struct Istr(NonNull<*const u8>);
 
-assert_eq_size!(FastStr, usize);
-assert_eq_size!(Option<FastStr>, usize);
+assert_eq_size!(Istr, usize);
+assert_eq_size!(Option<Istr>, usize);
 
-unsafe impl Send for FastStr {}
+unsafe impl Send for Istr {}
 
-unsafe impl Sync for FastStr {}
+unsafe impl Sync for Istr {}
 
-impl FastStr {
+impl Istr {
     pub fn new(s: &str) -> Self {
         if s.is_empty() {
             return EMPTY_FAST_STR;
         }
-        GLOBAL_TABLE.get_or_intern(s)
+        unsafe {
+            GLOBAL_TABLE.get_or_intern(s)
+        }
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -53,78 +55,74 @@ impl FastStr {
     }
 }
 
-impl PartialEq for FastStr {
+impl PartialEq for Istr {
     fn eq(&self, other: &Self) -> bool {
         self.as_str() == other.as_str()
     }
 }
 
-impl PartialEq<&str> for FastStr {
+impl PartialEq<&str> for Istr {
     fn eq(&self, other: &&str) -> bool {
         self.as_str() == *other
     }
 }
 
-impl Eq for FastStr {}
+impl Eq for Istr {}
 
-impl Into<String> for FastStr {
+impl Into<String> for Istr {
     fn into(self) -> String {
         self.as_str().to_owned()
     }
 }
 
-impl AsRef<str> for FastStr {
+impl AsRef<str> for Istr {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
 }
 
-impl std::hash::Hash for FastStr {
+impl std::hash::Hash for Istr {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.as_str().hash(state)
     }
 }
 #[derive(Debug)]
-struct InternTable(RwLock<HashSet<FastStr>>);
+struct InternTable(MaybeUninit<DashMap<Istr, ()>>);
 
 impl InternTable {
-    pub const fn new() -> Self {
-        // hasher doesn't actually matter because we never use it.
-        // we only manually caculate the hash
-
-        // this looks insane but BuildHasherDefault is size 0, so it's actually
-        // totally fine. however, we have to do it because DefaultHashBuilder doesn't implement
-        // default
-        let hasher: BuildHasherDefault<ahash::AHasher> = unsafe {
-            std::mem::transmute(())
-        };
-        Self(RwLock::new(HashSet::with_hasher(hasher)))
-    }
-
-    pub fn get_or_intern(&self, s: &str) -> FastStr {
-        let map = self.0.read().unwrap();
-        let hasher = map.hasher().clone();
-        let hash = hasher.hash_one(s);
-        if let Some(fast_str) = map.raw_table().get(hash, |q| q.0.as_str() == s) {
-            return fast_str.0;
+    pub fn get_or_intern(&self, s: &str) -> Istr {
+        let set: &DashMap<Istr, ()> = unsafe { self.0.assume_init_ref() };
+        let hash = set.hash_usize(&s) as u64;
+        let shard = set.determine_shard(hash as usize);
+        let shard = set.shards().get(shard).unwrap();
+        {
+            // scope is necessary so that rlock gets dropped
+            let rlock = shard.read();
+            if let Some(fast_str) = rlock.raw_table().get(hash, |q| q.0.as_str() == s) {
+                return fast_str.0;
+            }
         }
-        drop(map);
-        let mut map = self.0.write().unwrap();
-        // we have to get again because it's possible that another thread
-        // wrote to the map while we were waiting for the lock
-        let raw = map.raw_table_mut();
-        if let Some(fast_str) = raw.get(hash, |q| q.0.as_str() == s) {
+        let mut wlock = shard.write();
+        let map = wlock.raw_table_mut();
+        if let Some(fast_str) = map.get(hash, |q| q.0.as_str() == s) {
             return fast_str.0;
         }
         let fast_str = InternedData::construct(s);
-        let inserted = raw.insert_entry(hash, (fast_str, ()), |x| hasher.hash_one(x));
+        let inserted = map.insert_entry(hash, (fast_str, SharedValue::new(())), |x| set.hash_usize(&x.0) as u64);
         inserted.0
     }
 }
 
-static GLOBAL_TABLE: InternTable = InternTable::new();
+static mut GLOBAL_TABLE: InternTable = InternTable(MaybeUninit::uninit());
 
-const EMPTY_FAST_STR: FastStr = FastStr(unsafe {
+#[ctor::ctor]
+fn ctor_init_global_table() {
+    unsafe {
+        GLOBAL_TABLE.0.write(DashMap::new());
+    }
+}
+
+const EMPTY_FAST_STR: Istr = Istr(unsafe {
     // we're okay doing this because if the pointer pointed to the end
     // of memory, we'd be OOM anyway.
     NonNull::new_unchecked(usize::MAX as *mut *const u8)
@@ -140,11 +138,11 @@ struct InternedData {
 
 // implementation taken from https://www.reddit.com/r/rust/comments/mq3kqe/comment/gue0du1/?utm_source=reddit&utm_medium=web2x&context=3
 impl InternedData {
-    pub fn construct(s: &str) -> FastStr {
+    pub fn construct(s: &str) -> Istr {
         let interned = InternedData::new(s);
         let leaked = Box::leak(interned);
         let ptr = leaked as *const InternedData;
-        FastStr(unsafe {
+        Istr(unsafe {
             NonNull::new_unchecked(ptr as *mut *const u8)
         })
     }
@@ -203,12 +201,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
-        let s = FastStr::new("Hello");
+    fn test_new() {
+        let s = Istr::new("Hello");
         assert_eq!(s, "Hello");
-        // let s = Box::new(InternedData {
-        //     len: 3,
-        //     data: *[1, 2, 3],
-        // });
+    }
+
+    #[test]
+    fn test_new_same_address() {
+        let s = Istr::new("Hello");
+        assert_eq!(s, "Hello");
+        let t = Istr::new("Hello");
+        assert_eq!(s.0, t.0);
     }
 }
