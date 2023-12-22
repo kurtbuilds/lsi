@@ -9,7 +9,7 @@ build:
     cargo build
 
 bench:
-    cargo bench
+    cargo bench -- --nocapture
 
 install:
     cargo install --path .

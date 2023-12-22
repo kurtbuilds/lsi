@@ -1,5 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use lsi::Istr;
+use lsi::GLOBAL_TABLE;
+use lsi::{Istr, InternedData};
 use string_interner::StringInterner;
 use ustr::ustr;
 
@@ -13,18 +14,19 @@ fn bench_intern_strings(c: &mut Criterion) {
     let data = data_64x10k();
     c.bench_function("lsi::Istr::new", |b| b.iter(|| {
         for &s in &data {
-            Istr::new(black_box(s));
+            Istr::new(s);
         }
     }));
-    c.bench_function("string_interner::StringInterner::get_or_intern", |b| b.iter(|| {
-        let mut interner: StringInterner = StringInterner::new();
-        for &s in &data {
-            interner.get_or_intern(black_box(s));
-        }
-    }));
+    println!("lsi::Istr::new: {} interned", GLOBAL_TABLE.len());
+    // c.bench_function("string_interner::StringInterner::get_or_intern", |b| b.iter(|| {
+    //     let mut interner: StringInterner = StringInterner::new();
+    //     for &s in &data {
+    //         interner.get_or_intern(black_box(s));
+    //     }
+    // }));
     c.bench_function("ustr::ustr", |b| b.iter(|| {
         for &s in &data {
-            ustr(black_box(s));
+            ustr(s);
         }
     }));
 }

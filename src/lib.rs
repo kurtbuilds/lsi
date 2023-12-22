@@ -1,8 +1,9 @@
 use std::alloc::{alloc, Layout, LayoutError};
-use std::mem::MaybeUninit;
+use std::hash::BuildHasher;
 use std::ptr::{addr_of, addr_of_mut, NonNull};
-
-use dashmap::{DashMap, SharedValue};
+use std::sync::RwLock;
+use hashbrown::hash_map::DefaultHashBuilder;
+use hashbrown::HashSet;
 
 /// The primary type of this crate.
 /// Internally, it is a pointer to a leaked [`InternedData`] struct, which itself
@@ -23,9 +24,7 @@ impl Istr {
         if s.is_empty() {
             return EMPTY_FAST_STR;
         }
-        unsafe {
-            GLOBAL_TABLE.get_or_intern(s)
-        }
+        GLOBAL_TABLE.get_or_intern(s)
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -86,41 +85,32 @@ impl std::hash::Hash for Istr {
         self.as_str().hash(state)
     }
 }
+
 #[derive(Debug)]
-struct InternTable(MaybeUninit<DashMap<Istr, ()>>);
+pub struct InternTable(RwLock<HashSet<Istr>>);
 
 impl InternTable {
     pub fn get_or_intern(&self, s: &str) -> Istr {
-        let set: &DashMap<Istr, ()> = unsafe { self.0.assume_init_ref() };
-        let hash = set.hash_usize(&s) as u64;
-        let shard = set.determine_shard(hash as usize);
-        let shard = set.shards().get(shard).unwrap();
-        {
-            // scope is necessary so that rlock gets dropped
-            let rlock = shard.read();
-            if let Some(fast_str) = rlock.raw_table().get(hash, |q| q.0.as_str() == s) {
-                return fast_str.0;
-            }
-        }
-        let mut wlock = shard.write();
-        let map = wlock.raw_table_mut();
-        if let Some(fast_str) = map.get(hash, |q| q.0.as_str() == s) {
+        let mut lock = self.0.write().unwrap();
+        let hasher = lock.hasher().clone();
+        let hash = hasher.hash_one(s);
+        let map = lock.raw_table_mut();
+        if let Some(fast_str) = map.get(hash, |&(q, _)| q.as_str() == s) {
             return fast_str.0;
         }
         let fast_str = InternedData::construct(s);
-        let inserted = map.insert_entry(hash, (fast_str, SharedValue::new(())), |x| set.hash_usize(&x.0) as u64);
+        let inserted = map.insert_entry(hash, (fast_str, ()), |&(x, _)| hasher.hash_one(x));
         inserted.0
     }
-}
 
-static mut GLOBAL_TABLE: InternTable = InternTable(MaybeUninit::uninit());
-
-#[ctor::ctor]
-fn ctor_init_global_table() {
-    unsafe {
-        GLOBAL_TABLE.0.write(DashMap::new());
+    pub fn len(&self) -> usize {
+        self.0.read().unwrap().len()
     }
 }
+
+pub static GLOBAL_TABLE: InternTable = InternTable(RwLock::new(HashSet::with_hasher(unsafe {
+    std::mem::transmute::<_, DefaultHashBuilder>(())
+})));
 
 const EMPTY_FAST_STR: Istr = Istr(unsafe {
     // we're okay doing this because if the pointer pointed to the end
@@ -131,7 +121,7 @@ const EMPTY_FAST_STR: Istr = Istr(unsafe {
 
 /// This is the data that gets interned by the library.
 #[repr(C)]
-struct InternedData {
+pub struct InternedData {
     len: usize,
     data: [u8],
 }

@@ -216,29 +216,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ctor"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30d2b3721e861707777e3195b0158f950ae6dc4a27e4d02ff9f67e3eb3de199e"
-dependencies = [
- "quote",
- "syn",
-]
-
-[[package]]
-name = "dashmap"
-version = "5.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
-dependencies = [
- "cfg-if",
- "hashbrown 0.14.3",
- "lock_api",
- "once_cell",
- "parking_lot_core",
-]
-
-[[package]]
 name = "either"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -395,8 +372,6 @@ version = "0.1.0"
 dependencies = [
  "ahash 0.8.6",
  "criterion",
- "ctor",
- "dashmap",
  "hashbrown 0.14.3",
  "intaglio",
  "lasso",
